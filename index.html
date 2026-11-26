@@ -58,8 +58,9 @@ button.danger:hover{border-color:#c0392b;color:#c0392b}
 <div class="warnbar" id="nostore">Saving is unavailable in this browser, so your draft and history will not survive a refresh.</div>
 
 <div class="card">
-  <label for="name">Student's name <span class="hint">as written in the comment (add a nickname with a comma)</span></label>
-  <input type="text" id="name" autocomplete="off" placeholder="e.g. Amina">
+  <label for="name">Student's name <span class="hint">found from the comment. Edit it if wrong (add a nickname with a comma)</span></label>
+  <div class="row" style="margin:0"><input type="text" id="name" autocomplete="off" placeholder="Detected from the comment..." style="flex:1;min-width:160px"><button id="redetect" title="Detect the name again">Auto-detect</button></div>
+  <div class="status" id="nameinfo"></div>
   <label for="inp" style="margin-top:14px">Comment</label>
   <textarea id="inp" spellcheck="true" lang="en-CA" placeholder="Paste or type the comment here..."></textarea>
   <div class="status" id="detected"></div>
@@ -162,6 +163,23 @@ function preview(out,g,nm){
     return up?cap(r):r;
   });
 }
+const NOT_NAMES=new Set(('the a an this that these those there here it its in on at by for with without during after before over under through throughout overall also however although because when while since if as so but and or not next please keep continue try remember work great good excellent well very most many some all each every one two i we you he she they her his him their my our your what how why where who which should would could can will might must do does did is are was were be been has have had thank thanks now today currently recently lately strengths goals areas student students class term grade english math mathematics reading writing science social studies french art music gym language arts ela ms mr mrs miss dr monday tuesday wednesday thursday friday saturday sunday').split(' '));
+function detectNames(text){
+  const words=[...text.matchAll(/[A-Za-z]+(?:-[A-Za-z]+)*/g)];
+  const lowerSeen=new Set(words.filter(m=>m[0]===m[0].toLowerCase()).map(m=>m[0]));
+  const score=new Map();
+  words.forEach((m,i)=>{
+    const w=m[0],key=w.toLowerCase();
+    if(w.length<2||!/^[A-Z][a-z]+(?:-[A-Z][a-z]+)*$/.test(w))return;
+    if(NOT_NAMES.has(key)||lowerSeen.has(key))return;
+    if(/\b(Mr|Mrs|Ms|Miss|Dr)\.?\s*$/.test(text.slice(Math.max(0,m.index-6),m.index)))return;
+    const e=score.get(w)||{w,n:0,first:m.index};
+    e.n+=2;
+    if(i===0)e.n+=3;
+    score.set(w,e);
+  });
+  return [...score.values()].sort((a,b)=>b.n-a.n||a.first-b.first).map(e=>e.w);
+}
 // CORE END
 
 const $=id=>document.getElementById(id);
@@ -182,9 +200,21 @@ async function copyText(t){
 }
 const stamp=ts=>new Date(ts).toLocaleString('en-CA',{dateStyle:'medium',timeStyle:'short'});
 
+let nameManual=false;
 function update(){
-  const text=$('inp').value,nm=$('name').value;
-  store(DKEY,{name:nm,text});
+  const text=$('inp').value;
+  const cands=detectNames(text);
+  if(!nameManual)$('name').value=cands[0]||'';
+  const nm=$('name').value;
+  store(DKEY,{name:nm,text,manual:nameManual});
+  const others=cands.filter(c=>c.toLowerCase()!==nm.trim().toLowerCase()).slice(0,3);
+  let info='';
+  if(text.trim()){
+    if(nameManual)info='Using the name you typed.';
+    else if(nm)info='Name found automatically. Wrong? Change it in the box.';
+    else info='No name found in the comment. Type it in the box.';
+  }
+  $('nameinfo').innerHTML=E(info)+(others.length?' Other options: '+others.map(o=>'<button class="small usename" data-n="'+E(o)+'">'+E(o)+'</button>').join(' '):'');
   cur=convert(text,nm);
   $('out').innerHTML=text.trim()?cur.segs.map(s=>{
     const cls=s.k==='p'?'':' class="'+s.k+'"';
@@ -228,19 +258,29 @@ function histText(list){
 }
 
 $('inp').addEventListener('input',update);
-$('name').addEventListener('input',update);
+$('name').addEventListener('input',()=>{nameManual=$('name').value.trim()!=='';update()});
+$('redetect').onclick=()=>{nameManual=false;update();toast($('name').value?'Name detected':'No name found')};
+$('nameinfo').addEventListener('click',e=>{const b=e.target.closest('.usename');if(!b)return;$('name').value=b.dataset.n;nameManual=true;update()});
+$('inp').addEventListener('paste',()=>setTimeout(()=>{
+  if(nameManual){
+    const t=$('inp').value.toLowerCase();
+    const ns=$('name').value.split(/[,;]/).map(x=>x.trim().toLowerCase()).filter(Boolean);
+    if(!ns.some(n=>new RegExp('(?<![a-z])'+esc(n)+'(?![a-z])').test(t)))nameManual=false;
+  }
+  update();
+},0));
 $('copy').onclick=async()=>{
   if(!$('inp').value.trim()){toast('Nothing to copy');return}
   saveHist();
   toast(await copyText(cur.out)?'Copied and saved':'Copy blocked - select the text and copy it manually');
 };
 $('save').onclick=()=>{toast(saveHist()?'Saved to history':'Nothing to save')};
-$('clear').onclick=()=>{$('inp').value='';$('name').value='';update();$('inp').focus()};
+$('clear').onclick=()=>{nameManual=false;$('inp').value='';$('name').value='';update();$('inp').focus()};
 $('hist').addEventListener('click',async e=>{
   const item=e.target.closest('.item');if(!item)return;
   const h=hist.find(x=>x.id===item.dataset.id);if(!h)return;
   if(e.target.classList.contains('pick')){e.target.checked?sel.add(h.id):sel.delete(h.id);renderHist();return}
-  if(e.target.classList.contains('load')){$('name').value=h.name;$('inp').value=h.text;update();window.scrollTo({top:0,behavior:'smooth'})}
+  if(e.target.classList.contains('load')){$('name').value=h.name;nameManual=!!(h.name&&h.name.trim());$('inp').value=h.text;update();window.scrollTo({top:0,behavior:'smooth'})}
   if(e.target.classList.contains('cp')){toast(await copyText($('withdate').checked?stamp(h.ts)+'\n'+h.out:h.out)?'Copied':'Copy blocked')}
   if(e.target.classList.contains('del')){hist=hist.filter(x=>x.id!==h.id);store(HKEY,hist);renderHist()}
 });
@@ -257,7 +297,7 @@ $('clearhist').onclick=()=>{
 };
 
 const d=load(DKEY,{name:'',text:''});
-$('name').value=d.name||'';$('inp').value=d.text||'';
+$('name').value=d.name||'';nameManual=!!(d.manual&&d.name);$('inp').value=d.text||'';
 update();renderHist();
 </script>
 </body>
